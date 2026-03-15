@@ -55,11 +55,11 @@ def navigate(start_url: str, goal: str, keywords: list[str]) -> list[FoundPage]:
                 print("    No elements found — stopping.")
                 break
 
-            # 2. Keyword pre-filter
+            # 2. Keyword pre-filter — reduces LLM tokens, falls back to all if no match
             filtered = heuristic_filter(elements, keywords)
             print(f"    Elements: {len(elements)} → {len(filtered)} after keyword filter")
 
-            # 3. LINK model: pick candidates
+            # 3. LINK model: pick candidates from filtered elements
             candidates = llm_candidate_links(goal, filtered)
             print(f"    Candidates: {len(candidates)}")
 
@@ -69,7 +69,8 @@ def navigate(start_url: str, goal: str, keywords: list[str]) -> list[FoundPage]:
                 found_urls.add(normalize_url(fp.url))
                 found.append(fp)
 
-            # 5. NAV model: next click
+            # 5. NAV model: next click — uses ALL elements (not filtered) so it
+            #    can navigate to sections that don't match keywords directly
             decision = llm_next_click(goal, elements).strip()
             print(f"    Next click: {decision}")
 
@@ -84,7 +85,7 @@ def navigate(start_url: str, goal: str, keywords: list[str]) -> list[FoundPage]:
 
                 if not target or target.startswith("javascript:"):
                     print(f"    Skipping non-navigable: {chosen['text']}")
-                    break
+                    continue
 
                 nav_page.goto(target, wait_until="domcontentloaded", timeout=config.PAGE_TIMEOUT)
                 nav_page.wait_for_timeout(config.CLICK_WAIT)

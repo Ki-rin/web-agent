@@ -33,7 +33,8 @@ def verify_candidates(
     Verifies a list of candidate URLs and returns only those that
     actually satisfy the goal.
     """
-    to_check = [u for u in candidates if u not in found_urls]
+    # Normalize before dedup — found_urls stores normalized URLs
+    to_check = [u for u in candidates if u.split("#")[0].rstrip("/") not in found_urls]
     if not to_check:
         return []
 
