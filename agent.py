@@ -10,7 +10,8 @@ from playwright.sync_api import sync_playwright
 load_dotenv()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-MODEL        = "llama-3.3-70b-versatile"
+#MODEL        = "llama-3.3-70b-versatile"
+MODEL        = "llama-3.1-8b-instant"
 MAX_STEPS    = 10   # max clicks per run
 MAX_ELEMENTS = 30   # visible elements sent to LLM per page
 MAX_BRANCH   = 3    # matched links to recurse into
