@@ -1,24 +1,45 @@
 # 🕷️ Web Agent — Groq + Playwright
 
-A web navigation agent that uses **Playwright** to browse like a human and **Groq (LLaMA 3.3)** to decide what to click and which links match your goal.
+A web navigation agent that uses **Playwright** to browse like a human and **Groq** to find and **verify** pages matching your goal. Every result is confirmed by reading actual page content — not just guessing from link text.
 
 ## How it works
 
 ```
 Start URL
    ↓
-Browser loads page (Playwright, visible window)
+Browser loads page (visible Chromium window)
    ↓
-Extract visible DOM elements — links + buttons only
-(~10x fewer tokens than raw HTML, BeautifulSoup fallback if DOM is empty)
+Extract visible DOM elements (links + buttons)
    ↓
-Groq LLM picks matching links + decides what to click next
+LLM picks candidate links from link text/URLs   ← Step 1: guess
    ↓
-Agent clicks and repeats (up to MAX_STEPS)
+Agent opens each candidate and reads the page
    ↓
-Recurse into matched pages (up to MAX_DEPTH)
+LLM verifies the page actually satisfies goal   ← Step 2: verify
    ↓
-Return list of relevant URLs
+Only verified pages added to results (with snippet proof)
+   ↓
+Recurse into verified pages (up to MAX_DEPTH)
+   ↓
+Print clean results report
+```
+
+## Example output
+
+```
+═══════════════════════════════════════════════════
+  ✅  Results  —  3 verified page(s) found
+═══════════════════════════════════════════════════
+
+  1. Citi AAdvantage® Platinum Select® Card
+     URL     : https://www.citi.com/credit-cards/citi-aadvantage-platinum-select...
+     Verified: "Earn 2x miles on eligible American Airlines purchases and bonus miles..."
+     Model   : llama-3.3-70b-versatile
+
+  2. Citi® / AAdvantage® Gold World Elite Mastercard®
+     URL     : https://www.citi.com/credit-cards/citi-aadvantage-gold...
+     Verified: "Earn bonus miles after spending $500 in first 3 months..."
+     Model   : openai/gpt-oss-120b
 ```
 
 ## Quickstart
@@ -56,12 +77,12 @@ python agent.py
 
 ## Examples
 
-### Citi — find credit cards with fees
+### Citi — find credit cards with bonus miles
 
 ```python
 run(
     start_url="https://www.citi.com/credit-cards/compare/view-all-credit-cards",
-    goal="Find credit card pages that mention annual fees or foreign transaction fees",
+    goal="Find credit card pages that mention bonus miles",
 )
 ```
 
@@ -76,16 +97,33 @@ run(
 
 ---
 
-## Configuration
+## Model fallback
 
-Edit the constants at the top of `agent.py`:
+On a 429 rate limit the agent automatically switches to the next model.
+Short limits (≤ 2 min) wait and retry; longer ones skip to the next model.
+
+```python
+MODELS = [
+    "llama-3.3-70b-versatile",                   # best production model
+    "openai/gpt-oss-120b",                        # top reasoning, 500 t/s
+    "moonshotai/kimi-k2-instruct-0905",           # huge 262k context
+    "qwen/qwen3-32b",                             # strong alternative
+    "meta-llama/llama-4-scout-17b-16e-instruct",  # fast + cheap
+    "openai/gpt-oss-20b",                         # fastest: 1000 t/s
+    "llama-3.1-8b-instant",                       # last resort
+]
+```
+
+---
+
+## Configuration
 
 | Constant | Default | Description |
 |---|---|---|
-| `MODEL` | `llama-3.3-70b-versatile` | Groq model to use |
-| `MAX_STEPS` | `10` | Max clicks the agent takes per page |
+| `MODELS` | 7 models | Fallback chain, best → lightest |
+| `MAX_STEPS` | `10` | Max clicks per page session |
 | `MAX_ELEMENTS` | `30` | DOM elements sent to LLM per page |
-| `MAX_BRANCH` | `3` | Matched links to recurse into |
+| `MAX_BRANCH` | `3` | Verified pages to recurse into |
 | `MAX_DEPTH` | `2` | How many levels deep to crawl |
 
 ## Requirements
