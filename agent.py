@@ -1,8 +1,6 @@
 import json
 import os
-from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
 from playwright.sync_api import sync_playwright
@@ -10,58 +8,95 @@ from playwright.sync_api import sync_playwright
 load_dotenv()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-MODEL = "llama3-70b-8192"
-MAX_DEPTH = 2
-MAX_LINKS_PER_PAGE = 80
-MAX_BRANCH = 3
+MODEL        = "llama-3.3-70b-versatile"
+MAX_STEPS    = 10   # max clicks per run
+MAX_ELEMENTS = 30   # visible elements sent to LLM per page
+MAX_BRANCH   = 3    # matched links to recurse into
+MAX_DEPTH    = 2    # recursion depth
 
 
-# ── HTML cleaning ──────────────────────────────────────────────────────────────
+# ── DOM extraction (structured, not raw HTML) ──────────────────────────────────
+# Pulls only VISIBLE a + button elements directly from the live DOM.
+# ~10x fewer tokens than sending raw HTML to the LLM.
 
-def extract_clean_links(html: str, base_url: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-    links = []
-    seen = set()
-
-    for a in soup.find_all("a", href=True):
-        href = urljoin(base_url, a["href"])
-        text = a.get_text(strip=True)
-
-        if href in seen or not href.startswith("http") or text == "":
-            continue
-        seen.add(href)
-        links.append(f"- [{text}]: {href}")
-
-    return "\n".join(links[:MAX_LINKS_PER_PAGE])
-
-
-# ── LLM call ──────────────────────────────────────────────────────────────────
-
-def ask_groq(query: str, links_text: str) -> list[str]:
-    prompt = f"""You are a web navigation agent helping find pages that match a user's goal.
-
-User goal: {query}
-
-Links found on the current page:
-{links_text}
-
-Instructions:
-- Return ONLY a valid JSON array of URLs that best match the goal.
-- Include only full URLs (starting with http).
-- Return [] if nothing matches.
-- No explanation, no markdown, just raw JSON.
-
-Example output: ["https://example.com/pricing", "https://example.com/plans"]
+DOM_SCRIPT = """
+() => {
+    const items = [];
+    let i = 0;
+    document.querySelectorAll("a, button").forEach(el => {
+        if (el.offsetParent !== null) {
+            const text = el.innerText.trim();
+            if (text) {
+                items.push({
+                    id:   i++,
+                    text: text.slice(0, 80),
+                    href: el.href || null
+                });
+            }
+        }
+    });
+    return items.slice(0, 30);
+}
 """
 
+
+def extract_elements(page) -> list[dict]:
+    try:
+        return page.evaluate(DOM_SCRIPT)
+    except Exception as e:
+        print(f"  [warn] DOM extraction failed: {e}")
+        return []
+
+
+# ── LLM: decide what to click ─────────────────────────────────────────────────
+
+def ask_groq_action(goal: str, elements: list[dict]) -> str:
+    prompt = f"""You are a web navigation agent.
+
+User goal: {goal}
+
+Visible clickable elements on the current page:
+{json.dumps(elements, indent=2)}
+
+Instructions:
+- Return the NUMBER (id) of the single best element to click to get closer to the goal.
+- If the goal is already satisfied on this page, return: DONE
+- Return ONLY a number or DONE. No explanation.
+"""
     response = client.chat.completions.create(
         model=MODEL,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
+        temperature=0.1,
     )
+    return response.choices[0].message.content.strip()
 
+
+# ── LLM: which links on this page match the goal ──────────────────────────────
+
+def ask_groq_links(goal: str, elements: list[dict]) -> list[str]:
+    hrefs = [e for e in elements if e.get("href")]
+    if not hrefs:
+        return []
+
+    prompt = f"""You are a web navigation agent.
+
+User goal: {goal}
+
+Links on the current page:
+{json.dumps(hrefs, indent=2)}
+
+Instructions:
+- Return a JSON array of href values that match the goal.
+- Only include full URLs (starting with http).
+- Return [] if nothing matches.
+- No explanation, no markdown, just raw JSON.
+"""
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+    )
     raw = response.choices[0].message.content.strip()
-
     try:
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -73,32 +108,86 @@ Example output: ["https://example.com/pricing", "https://example.com/plans"]
         return []
 
 
-# ── Browser ───────────────────────────────────────────────────────────────────
+# ── Browser helpers ────────────────────────────────────────────────────────────
 
-def fetch_page(url: str) -> str | None:
+def make_page(playwright):
+    browser = playwright.chromium.launch(headless=True)
+    page = browser.new_page()
+    page.set_extra_http_headers({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    page.set_default_timeout(20000)
+    return browser, page
+
+
+def goto(page, url: str) -> bool:
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.set_extra_http_headers({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/122.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-            })
-            page.set_default_timeout(20000)
-            page.goto(url, wait_until="networkidle", timeout=15000)
-            html = page.content()
-            browser.close()
-            return html
+        page.goto(url, wait_until="networkidle", timeout=15000)
+        return True
     except Exception as e:
         print(f"  [error] Failed to load {url}: {e}")
-        return None
+        return False
 
 
-# ── Agent loop ────────────────────────────────────────────────────────────────
+# ── Step-based agent ───────────────────────────────────────────────────────────
+# Navigates like a human: looks at the page, picks what to click, repeats.
 
-def crawl(start_url: str, query: str, depth: int = 0, visited: set = None) -> list[str]:
+def navigate(start_url: str, goal: str) -> list[str]:
+    found_links: list[str] = []
+
+    with sync_playwright() as p:
+        browser, page = make_page(p)
+
+        if not goto(page, start_url):
+            browser.close()
+            return []
+
+        for step in range(MAX_STEPS):
+            print(f"\n  [step {step}] {page.url}")
+
+            elements = extract_elements(page)
+            if not elements:
+                print("  No visible elements found.")
+                break
+
+            # Collect matching links from current page
+            matched = ask_groq_links(goal, elements)
+            for url in matched:
+                if url not in found_links:
+                    print(f"  ✓ Found: {url}")
+                    found_links.append(url)
+
+            # Decide what to click next
+            decision = ask_groq_action(goal, elements)
+            print(f"  LLM decision: {decision}")
+
+            if "DONE" in decision.upper():
+                print("  Goal satisfied.")
+                break
+
+            try:
+                idx = int(decision)
+                chosen = elements[idx]
+                if chosen.get("href"):
+                    page.goto(chosen["href"], wait_until="networkidle", timeout=15000)
+                else:
+                    page.click(f"text={chosen['text']}")
+                    page.wait_for_load_state("networkidle")
+            except Exception as e:
+                print(f"  [error] Navigation failed: {e}")
+                break
+
+        browser.close()
+
+    return found_links
+
+
+# ── Recursive crawl ────────────────────────────────────────────────────────────
+
+def crawl(start_url: str, goal: str, depth: int = 0, visited: set = None) -> list[str]:
     if visited is None:
         visited = set()
 
@@ -106,42 +195,31 @@ def crawl(start_url: str, query: str, depth: int = 0, visited: set = None) -> li
         return []
 
     visited.add(start_url)
-    print(f"\n{'  ' * depth}[depth {depth}] Visiting: {start_url}")
+    print(f"\n{'  ' * depth}[depth {depth}] Starting at: {start_url}")
 
-    html = fetch_page(start_url)
-    if not html:
-        return []
+    results = navigate(start_url, goal)
 
-    links_text = extract_clean_links(html, start_url)
-    if not links_text:
-        print(f"{'  ' * depth}  No links found on page.")
-        return []
-
-    matched = ask_groq(query, links_text)
-    print(f"{'  ' * depth}  LLM matched {len(matched)} link(s): {matched}")
-
-    results = list(matched)
-
-    for url in matched[:MAX_BRANCH]:
-        deeper = crawl(url, query, depth + 1, visited)
+    for url in results[:MAX_BRANCH]:
+        deeper = crawl(url, goal, depth + 1, visited)
         results.extend(deeper)
 
     return results
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Entry point ────────────────────────────────────────────────────────────────
 
-def run(start_url: str, query: str) -> list[str]:
-    print(f"\n Starting web agent")
-    print(f" Goal   : {query}")
-    print(f" Start  : {start_url}")
-    print(f" Model  : {MODEL}")
-    print("─" * 50)
+def run(start_url: str, goal: str) -> list[str]:
+    print(f"\n{'─' * 50}")
+    print(f" Web Agent")
+    print(f" Goal  : {goal}")
+    print(f" Start : {start_url}")
+    print(f" Model : {MODEL}")
+    print(f"{'─' * 50}")
 
-    found = crawl(start_url, query)
+    found = crawl(start_url, goal)
     unique = list(dict.fromkeys(found))
 
-    print("\n" + "─" * 50)
+    print(f"\n{'─' * 50}")
     print(f" Found {len(unique)} matching page(s):\n")
     for link in unique:
         print(f"  • {link}")
@@ -149,10 +227,10 @@ def run(start_url: str, query: str) -> list[str]:
     return unique
 
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+# ── Run ────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     run(
         start_url="https://docs.python.org",
-        query="Find pages about async and concurrency",
+        goal="Find pages about async and concurrency",
     )

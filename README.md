@@ -1,6 +1,6 @@
 # 🕷️ Web Agent — Groq + Playwright
 
-A lightweight web crawling agent that uses **Playwright** for browser automation and **Groq (LLaMA 3)** to intelligently find pages matching your query.
+A web navigation agent that uses **Playwright** to browse like a human and **Groq (LLaMA 3)** to decide what to click and which links match your goal.
 
 ## How it works
 
@@ -9,11 +9,14 @@ Start URL
    ↓
 Browser loads page (Playwright)
    ↓
-Extract + clean all links (BeautifulSoup)
+Extract visible DOM elements — links + buttons only
+(~10x fewer tokens than raw HTML)
    ↓
-Groq LLM picks matching links
+Groq LLM picks matching links + decides what to click next
    ↓
-Recurse into matches (up to MAX_DEPTH)
+Agent clicks and repeats (up to MAX_STEPS)
+   ↓
+Recurse into matched pages (up to MAX_DEPTH)
    ↓
 Return list of relevant URLs
 ```
@@ -23,7 +26,7 @@ Return list of relevant URLs
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/your-username/web-agent.git
+git clone https://github.com/Ki-rin/web-agent.git
 cd web-agent
 ```
 
@@ -49,46 +52,43 @@ Get a free Groq API key at: https://console.groq.com/keys
 python agent.py
 ```
 
+---
+
+## Examples
+
+### Citi — find credit cards with fees
+
+```python
+run(
+    start_url="https://www.citi.com/credit-cards/compare/view-all-credit-cards",
+    goal="Find credit card pages that mention annual fees or foreign transaction fees",
+)
+```
+
+### Python Docs — async and concurrency
+
+```python
+run(
+    start_url="https://docs.python.org",
+    goal="Find pages about async and concurrency",
+)
+```
+
+---
+
 ## Configuration
 
 Edit the constants at the top of `agent.py`:
 
 | Constant | Default | Description |
 |---|---|---|
-| `MODEL` | `llama3-70b-8192` | Groq model to use |
-| `MAX_DEPTH` | `2` | How many levels deep to crawl |
-| `MAX_LINKS_PER_PAGE` | `80` | Max links sent to LLM per page |
+| `MODEL` | `llama-3.3-70b-versatile` | Groq model to use |
+| `MAX_STEPS` | `10` | Max clicks the agent takes per page |
+| `MAX_ELEMENTS` | `30` | Visible DOM elements sent to LLM per page |
 | `MAX_BRANCH` | `3` | How many matched links to recurse into |
-
-## Change the target
-
-Edit the bottom of `agent.py`:
-
-```python
-if __name__ == "__main__":
-    run(
-        start_url="https://docs.python.org",
-        query="Find pages about async and concurrency",
-    )
-```
-
-More examples:
-
-```python
-# Find Citi credit cards with fees
-run("https://www.citi.com/credit-cards/compare/view-all-credit-cards",
-    "Find credit card pages that mention annual fees or foreign transaction fees")
-
-# Find cheap products
-run("https://www.etsy.com/c/jewelry",
-    "Find all product pages where the price is under $50")
-
-# Find job listings
-run("https://jobs.example.com",
-    "Find backend engineer or Python developer roles")
-```
+| `MAX_DEPTH` | `2` | How many levels deep to crawl |
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12+
 - A free [Groq API key](https://console.groq.com/keys)
