@@ -1,16 +1,16 @@
 # 🕷️ Web Agent — Groq + Playwright
 
-A web navigation agent that uses **Playwright** to browse like a human and **Groq (LLaMA 3)** to decide what to click and which links match your goal.
+A web navigation agent that uses **Playwright** to browse like a human and **Groq (LLaMA 3.3)** to decide what to click and which links match your goal.
 
 ## How it works
 
 ```
 Start URL
    ↓
-Browser loads page (Playwright)
+Browser loads page (Playwright, visible window)
    ↓
 Extract visible DOM elements — links + buttons only
-(~10x fewer tokens than raw HTML)
+(~10x fewer tokens than raw HTML, BeautifulSoup fallback if DOM is empty)
    ↓
 Groq LLM picks matching links + decides what to click next
    ↓
@@ -26,7 +26,7 @@ Return list of relevant URLs
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/Ki-rin/web-agent.git
+git clone https://github.com/your-username/web-agent.git
 cd web-agent
 ```
 
@@ -84,11 +84,11 @@ Edit the constants at the top of `agent.py`:
 |---|---|---|
 | `MODEL` | `llama-3.3-70b-versatile` | Groq model to use |
 | `MAX_STEPS` | `10` | Max clicks the agent takes per page |
-| `MAX_ELEMENTS` | `30` | Visible DOM elements sent to LLM per page |
-| `MAX_BRANCH` | `3` | How many matched links to recurse into |
+| `MAX_ELEMENTS` | `30` | DOM elements sent to LLM per page |
+| `MAX_BRANCH` | `3` | Matched links to recurse into |
 | `MAX_DEPTH` | `2` | How many levels deep to crawl |
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.10+
 - A free [Groq API key](https://console.groq.com/keys)

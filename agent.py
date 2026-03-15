@@ -1,6 +1,8 @@
 import json
 import os
+from urllib.parse import urljoin
 
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
 from playwright.sync_api import sync_playwright
@@ -15,9 +17,9 @@ MAX_BRANCH   = 3    # matched links to recurse into
 MAX_DEPTH    = 2    # recursion depth
 
 
-# ── DOM extraction (structured, not raw HTML) ──────────────────────────────────
-# Pulls only VISIBLE a + button elements directly from the live DOM.
-# ~10x fewer tokens than sending raw HTML to the LLM.
+# ── DOM extraction ─────────────────────────────────────────────────────────────
+# Pulls only VISIBLE a + button elements from the live DOM.
+# ~10x fewer tokens than raw HTML. Falls back to BeautifulSoup if DOM is empty.
 
 DOM_SCRIPT = """
 () => {
@@ -42,10 +44,32 @@ DOM_SCRIPT = """
 
 def extract_elements(page) -> list[dict]:
     try:
-        return page.evaluate(DOM_SCRIPT)
+        # Scroll to trigger lazy-loaded content
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+        page.wait_for_timeout(1000)
+        elements = page.evaluate(DOM_SCRIPT)
     except Exception as e:
         print(f"  [warn] DOM extraction failed: {e}")
-        return []
+        elements = []
+
+    # Fallback: parse raw HTML with BeautifulSoup if DOM returns nothing
+    if not elements:
+        print("  [info] DOM empty, falling back to BeautifulSoup...")
+        try:
+            soup = BeautifulSoup(page.content(), "html.parser")
+            seen = set()
+            for i, a in enumerate(soup.find_all("a", href=True)):
+                href = urljoin(page.url, a["href"])
+                text = a.get_text(strip=True)
+                if href not in seen and href.startswith("http") and text:
+                    seen.add(href)
+                    elements.append({"id": len(elements), "text": text[:80], "href": href})
+                if len(elements) >= MAX_ELEMENTS:
+                    break
+        except Exception as e:
+            print(f"  [warn] BeautifulSoup fallback failed: {e}")
+
+    return elements
 
 
 # ── LLM: decide what to click ─────────────────────────────────────────────────
@@ -108,10 +132,12 @@ Instructions:
         return []
 
 
-# ── Browser helpers ────────────────────────────────────────────────────────────
+# ── Browser ────────────────────────────────────────────────────────────────────
 
 def make_page(playwright):
-    browser = playwright.chromium.launch(headless=True)
+    browser = playwright.chromium.launch(
+        headless=False,   # visible browser bypasses most bot detection
+    )
     page = browser.new_page()
     page.set_extra_http_headers({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -119,13 +145,16 @@ def make_page(playwright):
                       "Chrome/122.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
     })
-    page.set_default_timeout(20000)
+    page.set_default_timeout(30000)
     return browser, page
 
 
 def goto(page, url: str) -> bool:
     try:
-        page.goto(url, wait_until="networkidle", timeout=15000)
+        # domcontentloaded is faster and works on sites that never reach networkidle
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        # Extra wait for JS-heavy / slow sites like Citi
+        page.wait_for_timeout(3000)
         return True
     except Exception as e:
         print(f"  [error] Failed to load {url}: {e}")
@@ -150,7 +179,7 @@ def navigate(start_url: str, goal: str) -> list[str]:
 
             elements = extract_elements(page)
             if not elements:
-                print("  No visible elements found.")
+                print("  No elements found on page.")
                 break
 
             # Collect matching links from current page
@@ -172,10 +201,12 @@ def navigate(start_url: str, goal: str) -> list[str]:
                 idx = int(decision)
                 chosen = elements[idx]
                 if chosen.get("href"):
-                    page.goto(chosen["href"], wait_until="networkidle", timeout=15000)
+                    page.goto(chosen["href"], wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_timeout(2000)
                 else:
                     page.click(f"text={chosen['text']}")
-                    page.wait_for_load_state("networkidle")
+                    page.wait_for_load_state("domcontentloaded")
+                    page.wait_for_timeout(2000)
             except Exception as e:
                 print(f"  [error] Navigation failed: {e}")
                 break
