@@ -1,22 +1,14 @@
 """
-Candidate page verifier.
+verifier.py — load candidate pages and verify them against the goal.
 
-Two-phase design to work around Playwright's threading constraint:
-
-  Phase 1 (main thread, sequential):
-      Open each candidate in the browser and extract page signals.
-      Playwright sync API uses greenlets and cannot be called from threads —
-      context.new_page() MUST stay on the main thread.
-
-  Phase 2 (thread pool, parallel):
-      Fire all Groq verification API calls simultaneously.
-      HTTP calls are fully thread-safe. This is where the speed gain is.
+Phase 1: Browser loads each page sequentially (Playwright is not thread-safe)
+Phase 2: Groq verification calls fire in parallel (HTTP is thread-safe)
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config
-from agent.browser import load_url
+from agent.browser import is_dead_end, load_url
 from agent.extractor import extract_signals
 from agent.groq_client import active_model
 from agent.llm_tasks import llm_verify_page
@@ -24,41 +16,31 @@ from agent.models import FoundPage
 
 
 def verify_candidates(
-    candidates: list[str],
-    goal:       str,
-    context,
-    found_urls: set,
+    candidates: list[str], goal: str, context, checked_urls: set,
 ) -> list[FoundPage]:
-    """
-    Verifies a list of candidate URLs and returns only those that
-    actually satisfy the goal.
-    """
-    # Normalize before dedup — found_urls stores normalized URLs
-    to_check = [u for u in candidates if u.split("#")[0].rstrip("/") not in found_urls]
+    """Verifies candidate URLs against the goal. Returns matching pages."""
+    from agent.browser import normalize_url
+    to_check = [
+        u for u in candidates
+        if not is_dead_end(u) and normalize_url(u) not in checked_urls
+    ]
     if not to_check:
         return []
 
     print(f"      Verifying {len(to_check)} candidate(s)...")
-
-    # ── Phase 1: load pages sequentially on main thread ───────────────────────
-    page_signals: list[tuple[str, dict]] = _collect_signals(to_check, context)
-    if not page_signals:
-        return []
-
-    # ── Phase 2: verify with Groq in parallel ─────────────────────────────────
-    return _parallel_verify(page_signals, goal)
+    page_signals = _load_signals(to_check, context)
+    return _verify_parallel(page_signals, goal)
 
 
-def _collect_signals(urls: list[str], context) -> list[tuple[str, dict]]:
-    """Opens each URL in a single verify page and collects structured signals."""
-    results = []
-    page    = context.new_page()
+def _load_signals(urls: list[str], context) -> list[tuple[str, dict]]:
+    """Opens each URL and collects page signals. Must run on main thread."""
+    results, page = [], context.new_page()
     try:
         for url in urls:
             if load_url(page, url):
-                signals = extract_signals(page)
-                results.append((url, signals))
-                print(f"        Loaded: {signals['title'] or url}")
+                sig = extract_signals(page)
+                results.append((url, sig))
+                print(f"        Loaded: {sig['title'] or url}")
             else:
                 print(f"        Could not load: {url}")
     finally:
@@ -66,35 +48,28 @@ def _collect_signals(urls: list[str], context) -> list[tuple[str, dict]]:
     return results
 
 
-def _parallel_verify(
-    page_signals: list[tuple[str, dict]],
-    goal:         str,
-) -> list[FoundPage]:
-    """Calls Groq verification for all pages in parallel threads."""
+def _verify_parallel(page_signals: list[tuple[str, dict]], goal: str) -> list[FoundPage]:
+    """Calls Groq for all pages in parallel and returns verified results."""
     sig_map  = {url: sig for url, sig in page_signals}
     verified = []
 
-    def _verify(url: str, signals: dict):
-        return url, llm_verify_page(goal, url, signals)
-
     with ThreadPoolExecutor(max_workers=config.VERIFY_WORKERS) as pool:
-        futures = {
-            pool.submit(_verify, url, sig): url
-            for url, sig in page_signals
-        }
+        futures = {pool.submit(llm_verify_page, goal, url, sig): url
+                   for url, sig in page_signals}
         for future in as_completed(futures):
-            url, result = future.result()
-            sig = sig_map[url]
+            url    = futures[future]
+            result = future.result()
+            sig    = sig_map[url]
 
             if result and result.get("verified"):
                 fp = FoundPage(
-                    url     = url,
-                    title   = sig["title"] or url,
-                    snippet = result.get("snippet", ""),
-                    model   = active_model("verify"),
+                    url          = url,
+                    title        = sig["title"] or url,
+                    snippet      = result.get("snippet", ""),
+                    verify_model = active_model("verify"),
                 )
                 verified.append(fp)
-                print(f"      ✓ VERIFIED [{fp.model}]: {fp.title}")
+                print(f"      ✓ VERIFIED [{fp.verify_model}]: {fp.title}")
                 print(f'        └ "{fp.snippet}"')
             else:
                 print(f"      ✗ Not relevant: {sig['title'] or url}")

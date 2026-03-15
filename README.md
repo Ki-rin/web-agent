@@ -1,6 +1,6 @@
 # 🕷️ Web Agent — Groq + Playwright
 
-Navigates websites like a human and returns **verified** pages that actually match your goal — not just guesses from link text.
+Navigates websites like a human and returns only **verified** pages that match your goal — with proof.
 
 ## Quickstart
 
@@ -9,17 +9,17 @@ git clone https://github.com/your-username/web-agent.git
 cd web-agent
 pip install -r requirements.txt
 playwright install chromium
-cp .env.example .env   # paste your Groq API key
+cp .env.example .env    # add your Groq API key
 python main.py
 ```
 
-Get a free key at: https://console.groq.com/keys
+Free API key: https://console.groq.com/keys
 
 ---
 
 ## Usage
 
-Edit `main.py`:
+Edit the bottom of `main.py`:
 
 ```python
 run(
@@ -28,41 +28,21 @@ run(
 )
 ```
 
-```bash
-python main.py
-```
-
-### Example output
-
-```
-  ✅  3 verified result(s) found
-
-  1. Citi AAdvantage® Platinum Select® Card
-     URL    : https://www.citi.com/credit-cards/citi-aadvantage-platinum-select...
-     Proof  : "Earn 50,000 bonus miles after spending $2,500 in the first 3 months"
-     Model  : openai/gpt-oss-120b
-
-  2. Citi® / AAdvantage® Gold World Elite Mastercard®
-     URL    : https://www.citi.com/credit-cards/citi-aadvantage-gold...
-     Proof  : "Earn bonus miles on every American Airlines purchase"
-     Model  : openai/gpt-oss-120b
-```
-
 ---
 
 ## How it works
 
-For each page the agent visits:
+Each step, the agent:
 
-1. **Extract** visible links and buttons from the live DOM
-2. **Filter** by goal keywords (fast, no LLM call)
-3. **LINK model** picks candidate URLs from filtered links
-4. **Open** each candidate in the browser and read its content
-5. **VERIFY model** confirms the page actually satisfies the goal (parallel Groq calls)
+1. Extracts visible links and buttons from the DOM
+2. Filters by goal keywords — no LLM, fast
+3. **LINK model** picks candidate URLs
+4. Opens each candidate in the browser and reads the page
+5. **VERIFY model** confirms the page actually satisfies the goal (parallel)
 6. **NAV model** decides what to click next
-7. Repeat up to `MAX_STEPS`, then optionally recurse into verified pages
+7. Repeats until `TARGET_RESULTS` found or `MAX_STEPS` reached
 
-Every result includes a snippet proving *why* it matched — no false positives.
+Every result includes a snippet proving why it matched.
 
 ---
 
@@ -71,47 +51,43 @@ Every result includes a snippet proving *why* it matched — no false positives.
 ```
 web-agent/
 ├── main.py            ← run your goal here
-├── config.py          ← all settings
-├── requirements.txt
+├── config.py          ← all settings (including dead-end patterns)
 └── agent/
-    ├── models.py      ← FoundPage dataclass
-    ├── groq_client.py ← API calls, per-role fallback chains, cache
-    ├── browser.py     ← Playwright setup and page loading
-    ├── extractor.py   ← DOM extraction, signals, keyword filter
-    ← llm_tasks.py    ← nav / link / verify LLM functions
-    ├── verifier.py    ← sequential browser load + parallel Groq verify
+    ├── models.py      ← FoundPage and StepLog dataclasses
+    ├── groq_client.py ← Groq API: per-role fallback chains + cache
+    ├── browser.py     ← Playwright setup, overlay dismissal, URL utils
+    ├── extractor.py   ← DOM extraction, page signals, keyword filter
+    ├── llm_tasks.py   ← nav / link / verify LLM prompts
+    ├── verifier.py    ← load pages + verify in parallel
     ├── navigator.py   ← step-by-step navigation loop
-    └── crawler.py     ← recursive crawl + run() public API
+    └── crawler.py     ← recursive crawl + run() + final report
 ```
 
 ---
 
 ## Three-model pipeline
 
-Each task uses the right-sized model. Each role has its own fallback chain — a rate limit on VERIFY doesn't affect NAV or LINK.
+Each role uses the right model and fails over independently.
 
-| Role | Primary model | Purpose |
+| Role | Primary model | What it does |
 |---|---|---|
-| **NAV** | `llama-3.1-8b-instant` | Which element to click next |
-| **LINK** | `qwen/qwen3-32b` | Which links look relevant |
-| **VERIFY** | `openai/gpt-oss-120b` | Does this page actually satisfy the goal |
+| **NAV** | `llama-3.1-8b-instant` | Decides what to click next |
+| **LINK** | `qwen/qwen3-32b` | Picks candidate URLs from a page |
+| **VERIFY** | `openai/gpt-oss-120b` | Reads page content and confirms goal match |
 
-On rate limit or decommission, each role automatically falls back through its own chain. All fallbacks are configured in `config.py`.
+If any model hits a rate limit or is decommissioned, it automatically falls back to the next in its chain without affecting the other roles. All chains are in `config.py`.
 
 ---
 
-## Configuration (`config.py`)
+## Configuration
+
+All settings are in `config.py`:
 
 | Setting | Default | Description |
 |---|---|---|
 | `MAX_STEPS` | `8` | Max clicks per session |
-| `MAX_DEPTH` | `1` | Recursion depth (0 = no recursion) |
-| `TARGET_RESULTS` | `5` | Stop after N verified results |
+| `MAX_DEPTH` | `1` | Recursion into verified pages (0 = none) |
+| `TARGET_RESULTS` | `5` | Stop after this many verified results |
 | `PAGE_LOAD_WAIT` | `1500ms` | Wait after page load |
-| `VERIFY_WORKERS` | `4` | Parallel Groq threads for verification |
-| `HEADLESS` | `False` | Visible browser — bypasses most bot detection |
-
-## Requirements
-
-- Python 3.10+
-- Free [Groq API key](https://console.groq.com/keys)
+| `VERIFY_WORKERS` | `4` | Parallel threads for verification |
+| `HEADLESS` | `False` | Visible browser bypasses most bot detection |

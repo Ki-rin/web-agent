@@ -1,16 +1,4 @@
 .env
-*.env
+.venv/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.venv/
-venv/
-env/
-.idea/
-.vscode/
-*.iml
-.DS_Store
-Thumbs.db
-playwright-report/
-test-results/
