@@ -262,7 +262,12 @@ def run(start_url: str, goal: str) -> list[str]:
 # ── Run ────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # run(
+    #     start_url="https://docs.python.org",
+    #     goal="Find pages about async and concurrency",
+    # )
+
     run(
-        start_url="https://docs.python.org",
-        goal="Find pages about async and concurrency",
+        start_url="https://www.citi.com/credit-cards/compare/view-all-credit-cards",
+        goal="Find credit card pages that mention bonus miles",
     )
