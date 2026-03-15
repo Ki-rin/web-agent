@@ -7,6 +7,7 @@ independently — a VERIFY rate limit doesn't affect NAV or LINK.
 
 import os
 import re
+import threading
 import time
 
 from groq import Groq
@@ -27,15 +28,17 @@ _role_chains: dict[str, list[str]] = {
     "link":   config.LINK_MODELS,
     "verify": config.VERIFY_MODELS,
 }
+_role_lock = threading.Lock()
 
 
 # ── Public helpers ────────────────────────────────────────────────────────────
 
 def active_model(role: str) -> str:
     """Returns the currently active model for a role."""
-    chain = _role_chains[role]
-    idx   = _role_idx[role]
-    return chain[min(idx, len(chain) - 1)]
+    with _role_lock:
+        chain = _role_chains[role]
+        idx   = _role_idx[role]
+        return chain[min(idx, len(chain) - 1)]
 
 
 def call(prompt: str, role: str) -> str:
@@ -93,12 +96,13 @@ def call(prompt: str, role: str) -> str:
 # ── Internal ──────────────────────────────────────────────────────────────────
 
 def _advance(role: str, reason: str) -> bool:
-    chain = _role_chains[role]
-    idx   = _role_idx[role]
-    if idx + 1 < len(chain):
-        _role_idx[role] = idx + 1
-        _log(f"{reason} → switching to {chain[idx + 1]}")
-        return True
+    with _role_lock:
+        chain = _role_chains[role]
+        idx   = _role_idx[role]
+        if idx + 1 < len(chain):
+            _role_idx[role] = idx + 1
+            _log(f"{reason} → switching to {chain[idx + 1]}")
+            return True
     _log(f"{reason} → all fallbacks exhausted for [{role}].")
     return False
 

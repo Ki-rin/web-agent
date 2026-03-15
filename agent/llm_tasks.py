@@ -18,22 +18,25 @@ def _parse_json(raw: str, fallback):
         return fallback
 
 
-def llm_extract_keywords(goal: str) -> list[str]:
+def llm_extract_keywords(goal: str, start_url: str = "") -> list[str]:
     """
     Asks the LLM to generate search keywords from a goal description.
 
     Returns lowercase terms that might appear in link text or URLs on relevant pages.
     One cheap call at startup — result is cached by groq_client.
     """
+    site_note = f"\nTarget site: {start_url}" if start_url else ""
     prompt = f"""Given this browsing goal, generate 8-15 short keywords or phrases
 that would likely appear in link text or URLs on relevant pages.
 
-Goal: {goal}
+Goal: {goal}{site_note}
 
 Include:
 - Obvious terms from the goal itself
-- Related product names, brand terms, or category names a site might use
-- Synonyms and variations (e.g. "miles" → also "rewards", "points", "earn")
+- Section names, module names, or page titles the TARGET SITE would use
+- Synonyms and variations relevant to this specific site
+
+Do NOT include terms from other platforms or languages unless the goal mentions them.
 
 Return a JSON array of lowercase strings. No explanation, no markdown, no <think> block.
 Example: ["credit card", "bonus miles", "rewards", "aadvantage", "travel", "earn"]"""
@@ -48,15 +51,19 @@ def llm_candidate_links(goal: str, elements: list[dict]) -> list[str]:
     hrefs = [e for e in elements if e.get("href")]
     if not hrefs:
         return []
+    # Compact format: one line per link — saves ~60% tokens vs indent=2 JSON
+    link_lines = "\n".join(f"- {e['text']} → {e['href']}" for e in hrefs)
     prompt = f"""You are a web navigation agent.
 User goal: {goal}
 
 Links on the current page:
-{json.dumps(hrefs, indent=2)}
+{link_lines}
 
 Return a JSON array of href values for links that could lead to pages relevant to the goal.
-Include specific product pages AND category pages that might contain relevant content.
-Be INCLUSIVE — it is better to check an extra link than to miss one.
+Include specific content pages AND section pages that might contain relevant sub-pages.
+Prefer links that go DEEPER into the site over links that go to different sites.
+SKIP version switcher links (e.g. links that only change a version number like /3.9/ vs /3.10/).
+SKIP language switcher links.
 Full URLs only (starting with http). Return [] only if truly nothing is relevant.
 Raw JSON only — no explanation, no markdown, no <think> block."""
     return _parse_json(call(prompt, role="link"), [])
@@ -106,24 +113,32 @@ def llm_next_click(
     if visited_urls:
         avoid_note += f"\nAlready visited these pages (avoid going back): {visited_urls[-6:]}"
 
-    # Remind the LLM to stay focused on the goal topic
+    # Remind the LLM to stay focused and go deeper
     scope_note = f"""
-IMPORTANT: Stay focused on the goal. Do NOT click links to unrelated site sections
-(e.g. if the goal is about credit cards, don't click Banking, Lending, Investing, etc.).
+IMPORTANT navigation priorities:
+1. Click links that go DEEPER into content (e.g. "Standard Library" → specific modules)
+2. Stay on the same website — avoid off-site links when on-site options remain
+3. NEVER click version switcher links (e.g. "3.9", "3.10", "v2.0") or language switchers
+4. Stay focused on the goal — skip unrelated sections
 Only click links that could plausibly lead to content relevant to: "{goal}"."""
+
+    # Compact element list: id: text [href] — saves tokens
+    el_lines = "\n".join(
+        f"  {e['id']}: {e['text']}" + (f"  [{e['href']}]" if e.get('href') else "")
+        for e in elements
+    )
 
     prompt = f"""You are a web navigation agent exploring a website.
 User goal: {goal}
 Progress: {found_count} of {target} target pages found so far.{avoid_note}{scope_note}
 
 Clickable elements:
-{json.dumps(elements, indent=2)}
+{el_lines}
 
 Rules:
 - NEVER click Apply, Sign Up, Login, terms, or any application/form links
 - Do NOT pick any id listed in "already tried"
 - Prefer links to SPECIFIC individual product or content pages over generic navigation
-- Look for card names, product categories, or topic sections to explore
 - Only return DONE if {found_count} >= {target} OR you have exhausted all relevant options
 
 Return ONLY a number (element id) or DONE. No explanation, no markdown, no <think> block."""

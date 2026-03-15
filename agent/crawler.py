@@ -24,7 +24,7 @@ def crawl(
         visited = set()
 
     norm = normalize_url(start_url)
-    if depth >= config.MAX_DEPTH or norm in visited:
+    if depth > config.MAX_DEPTH or norm in visited:
         return [], []
     visited.add(norm)
 
@@ -52,7 +52,7 @@ def run(start_url: str, goal: str) -> list[FoundPage]:
     run_start = time.time()
 
     _header(goal, start_url)
-    keywords = llm_extract_keywords(goal)
+    keywords = llm_extract_keywords(goal, start_url)
 
     all_pages, all_logs = crawl(start_url, goal, keywords)
 

@@ -8,11 +8,12 @@ MAX_DEPTH      = 1
 TARGET_RESULTS = 5
 
 # ── Speed ─────────────────────────────────────────────────────────────────────
-PAGE_LOAD_WAIT  = 1500   # ms after domcontentloaded
-SCROLL_WAIT     = 500    # ms after scroll
-CLICK_WAIT      = 1000   # ms after a nav click
-VERIFY_WORKERS  = 4      # parallel Groq verify calls
-BODY_TEXT_LIMIT = 2000   # chars of body text sent to verify LLM
+PAGE_LOAD_WAIT      = 1500   # ms after domcontentloaded
+SCROLL_WAIT         = 500    # ms after scroll
+CLICK_WAIT          = 1000   # ms after a nav click
+VERIFY_WORKERS      = 4      # parallel Groq verify calls
+BODY_TEXT_LIMIT     = 2000   # chars of body text sent to verify LLM
+MAX_VERIFY_PER_STEP = 5      # max candidates to browser-load per step
 
 # ── Browser ───────────────────────────────────────────────────────────────────
 HEADLESS     = False
@@ -49,17 +50,14 @@ LINK_MODELS = [
     "qwen/qwen3-32b",
     "llama-3.3-70b-versatile",
     "meta-llama/llama-4-scout-17b-16e-instruct",
-    "openai/gpt-oss-20b",
     "llama-3.1-8b-instant",
 ]
 
 VERIFY_MODELS = [
-    "openai/gpt-oss-120b",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
     "llama-3.3-70b-versatile",
-    "moonshotai/kimi-k2-instruct-0905",
     "qwen/qwen3-32b",
     "meta-llama/llama-4-scout-17b-16e-instruct",
-    "openai/gpt-oss-20b",
     "llama-3.1-8b-instant",
 ]
 

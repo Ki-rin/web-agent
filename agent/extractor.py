@@ -8,17 +8,25 @@ from bs4 import BeautifulSoup
 
 import config
 
-_DOM_SCRIPT = """() => {
+_DOM_SCRIPT_TPL = """(maxEl) => {
     const items = [];
+    const seenHrefs = new Set();
     let i = 0;
     document.querySelectorAll("a, button, [role=button], input[type=submit]").forEach(el => {
         if (el.offsetParent !== null) {
             const text = (el.innerText || el.value || "").trim();
-            if (text) items.push({ id: i++, text: text.slice(0, 80), href: el.href || null });
+            if (!text) return;
+            const href = el.href || null;
+            if (href) {
+                const clean = href.split('?')[0].split('#')[0];
+                if (seenHrefs.has(clean)) return;
+                seenHrefs.add(clean);
+            }
+            items.push({ id: i++, text: text.slice(0, 80), href: href });
         }
     });
-    return items.slice(0, %d);
-}""" % config.MAX_ELEMENTS
+    return items.slice(0, maxEl);
+}"""
 
 
 def extract_elements(page) -> list[dict]:
@@ -26,7 +34,7 @@ def extract_elements(page) -> list[dict]:
     try:
         page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
         page.wait_for_timeout(config.SCROLL_WAIT)
-        elements = page.evaluate(_DOM_SCRIPT)
+        elements = page.evaluate(_DOM_SCRIPT_TPL, config.MAX_ELEMENTS)
         if elements:
             return elements
     except Exception as e:
